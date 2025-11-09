@@ -1,149 +1,172 @@
 #!/bin/bash
-# DevRecon.sh v8.0 - FULL RECON + -f file.txt -n + -f file.txt -l
+# DevRecon v10.0 - FULL RECON TOOL (All Features + -f file -l -n + Cloud Shell Ready)
 # Author: DevSec Pro | 2025
 
 set -euo pipefail
 
 G="\033[0;32m"; R="\033[0;31m"; Y="\033[1;33m"; C="\033[0;36m"; B="\033[0;34m"; N="\033[0m"
-msg() { echo -e "${2:-$G}[DevRecon v8.0] $1$N"; }
+msg() { echo -e "${2:-$G}[DevRecon v10.0] $1$N"; }
 
 loading() {
     local msg="$1"
     local pid=$!
-    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local spin='⣾⣽⣻⢿⡿⣟⣯⣷'
     local i=0
     while kill -0 $pid 2>/dev/null; do
-        i=$(( (i+1) % 10 ))
+        i=$(( (i+1) % 8 ))
         printf "\r${Y}[Loading] ${spin:$i:1} $msg...${N}"
         sleep 0.1
     done
     printf "\r${G}[Success] $msg Done!${N}\n"
 }
 
+# Fix PATH
 export PATH="$PATH:$(go env GOPATH)/bin"
 
-install_tool() {
+# Force Reinstall httpx (Fix -l issue)
+msg "Updating httpx..." "$Y"
+go install github.com/projectdiscovery/httpx/cmd/httpx@latest &>/dev/null || true
+msg "httpx ready!" "$G"
+
+# Install Tools
+install() {
     local name=$1 cmd=$2 repo=$3
     if ! command -v "$cmd" &>/dev/null; then
         msg "Installing $name..." "$Y"
-        (go install "$repo"@latest 2>/dev/null || pip install "$name" 2>/dev/null || true) & loading "Installing $name"
+        (go install "$repo"@latest 2>/dev/null || pip install "$name" 2>/dev/null || true) & loading "$name"
     else
-        msg "$name is ready" "$C"
+        msg "$name ready" "$C"
     fi
 }
 
-install_tool "httpx" "httpx" "github.com/projectdiscovery/httpx/cmd/httpx"
-install_tool "nuclei" "nuclei" "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
-install_tool "naabu" "naabu" "github.com/projectdiscovery/naabu/v2/cmd/naabu"
-install_tool "gf" "gf" "github.com/tomnomtom/gf"
-install_tool "paramspider" "paramspider" "paramspider"
-install_tool "gowitness" "gowitness" "github.com/sensepost/gowitness@latest"
+install "nuclei" "nuclei" "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
+install "naabu" "naabu" "github.com/projectdiscovery/naabu/v2/cmd/naabu"
+install "subfinder" "subfinder" "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
+install "amass" "amass" "github.com/owasp-amass/amass/v4/..."
+install "assetfinder" "assetfinder" "github.com/tomnomnom/assetfinder"
+install "gf" "gf" "github.com/tomnomnom/gf"
+install "paramspider" "paramspider" "paramspider"
+install "gowitness" "gowitness" "github.com/sensepost/gowitness@latest"
 nuclei -update-templates &>/dev/null && msg "Nuclei templates updated" "$C"
 
-# === ARG PARSING ===
-DOMAIN=""; INPUT_FILE=""; DO_SUBS=false; DO_LIVE=false; DO_PARAMS=false; DO_PORTS=false; DO_NUCLEI=false; DO_FULL=false
+# === ARGUMENTS ===
+DOMAIN=""; FILE=""; MODE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -d) DOMAIN="$2"; shift ;;
-        -f) INPUT_FILE="$2"; shift ;;
-        -s) DO_SUBS=true ;;
-        -l) DO_LIVE=true ;;
-        -p) DO_PARAMS=true ;;
-        -b) DO_PORTS=true ;;
-        -n) DO_NUCLEI=true ;;
-        -a) DO_FULL=true ;;
+        -f) FILE="$2"; shift ;;
+        -s) MODE+="subs " ;;
+        -l) MODE+="live " ;;
+        -p) MODE+="params " ;;
+        -b) MODE+="ports " ;;
+        -n) MODE+="nuclei " ;;
+        -a) MODE="all" ;;
         -h) 
             cat <<'EOF'
 
-DevRecon.sh v8.0 - GOD MODE RECON
+DevRecon v10.0 - GOD MODE RECON
 
 Usage:
-  ./DevRecon.sh -d domain.com -a              → Full Recon
-  ./DevRecon.sh -d domain.com -s -l           → Subdomains + Live
-  ./DevRecon.sh -f subs.txt -l                → Live from file
-  ./DevRecon.sh -f urls.txt -n                → Nuclei on file
-  ./DevRecon.sh -d domain.com -p              → Parameters
-  ./DevRecon.sh -d domain.com -b              → Ports + OS
-  ./DevRecon.sh -h                            → Help
+  ./DevRecon.sh -d domain.com -a          → FULL RECON
+  ./DevRecon.sh -d domain.com -s -l       → Subdomains + Live
+  ./DevRecon.sh -f file.txt -l            → Live URLs from file
+  ./DevRecon.sh -f file.txt -n            → Nuclei on file
+  ./DevRecon.sh -d domain.com -p          → Parameters
+  ./DevRecon.sh -d domain.com -b          → Ports + OS
+  ./DevRecon.sh -h                        → Help
 
 Examples:
-  ./DevRecon.sh -f ~/live_urls.txt -n
-  ./DevRecon.sh -f ~/subs.txt -l
+  ./DevRecon.sh -d tesla.com -a
+  ./DevRecon.sh -f subs.txt -l
+  ./DevRecon.sh -f urls.txt -n
 
 EOF
             exit 0 ;;
-        *) msg "Invalid option: $1" "$R"; exit 1 ;;
+        *) msg "Invalid: $1" "$R"; exit 1 ;;
     esac
     shift
 done
 
-# === WORKDIR & INPUT ===
-if [[ -n "$INPUT_FILE" && -f "$INPUT_FILE" ]]; then
-    WORKDIR="$(pwd)/recon-from-file-$(date +%s)"
-    mkdir -p "$WORKDIR"/{live,vulns,screenshots}
-    cp "$INPUT_FILE" "$WORKDIR/input.txt"
+[[ -z "$DOMAIN" && -z "$FILE" ]] && { msg "Use -d domain or -f file.txt" "$R"; exit 1; }
+
+# === WORKDIR ===
+if [[ -n "$FILE" && -f "$FILE" ]]; then
+    WORKDIR="$HOME/DevRecon-file-$(date +%s)"
+    mkdir -p "$WORKDIR"/{live,vulns}
+    cp "$FILE" "$WORKDIR/input.txt"
     cd "$WORKDIR"
-    msg "Using input file: $INPUT_FILE" "$C"
-elif [[ -n "$DOMAIN" ]]; then
+    msg "Input file: $FILE" "$C"
+else
     WORKDIR="$HOME/DevRecon-$DOMAIN-$(date +%s)"
     mkdir -p "$WORKDIR"/{subs,live,urls,params,ports,vulns,screenshots} && cd "$WORKDIR"
-else
-    msg "Use -d domain.com or -f file.txt" "$R"; exit 1
 fi
 
 # === SUBDOMAINS ===
-if $DO_SUBS || $DO_FULL; then
-    [[ -z "$DOMAIN" ]] && { msg "Need -d domain for -s" "$R"; exit 1; }
-    msg "Enumerating subdomains..." "$C"
+if [[ "$MODE" == *"subs"* || "$MODE" == "all" ]]; then
+    msg "Subdomain Enumeration..." "$C"
     (
         subfinder -d "$DOMAIN" -silent -o subs.txt
-        amass enum -passive -d "$DOMAIN" 2>/dev/null | grep -oE "[a-zA-Z0-9.-]+\.$DOMAIN" >> subs.txt
+        amass enum -passive -d "$DOMAIN" 2>/dev/null | awk '{print $1}' >> subs.txt
         assetfinder --subs-only "$DOMAIN" >> subs.txt
         sort -u subs.txt -o subs.txt
     ) & loading "Subdomains"
     msg "Found $(wc -l < subs.txt) subdomains" "$G"
 fi
 
-# === LIVE FROM FILE OR SUBS ===
-if $DO_LIVE || $DO_FULL; then
+# === LIVE URLs ===
+if [[ "$MODE" == *"live"* || "$MODE" == "all" ]]; then
     INPUT="subs.txt"
     [[ -f "input.txt" ]] && INPUT="input.txt"
-    [[ ! -s "$INPUT" ]] && { msg "No input! Use -f or -s" "$R"; exit 1; }
-    msg "Probing live hosts..." "$C"
+    [[ ! -s "$INPUT" ]] && { msg "No input!" "$R"; exit 1; }
+
+    msg "Live Probing..." "$C"
     (
-        httpx -l "$INPUT" -silent -sc -title -o live.txt
+        httpx -list "$INPUT" -silent -sc -title -o live.txt
         grep -E "200|301|302" live.txt | cut -d' ' -f1 > live_urls.txt
-    ) & loading "Live Probing"
-    msg "Live URLs: $(wc -l < live_urls.txt)" "$G"
+    ) & loading "Live URLs"
+    msg "Live: $(wc -l < live_urls.txt)" "$G"
 fi
 
-# === NUCLEI ON FILE OR LIVE ===
-if $DO_NUCLEI || $DO_FULL; then
+# === PARAMETERS ===
+if [[ "$MODE" == *"params"* || "$MODE" == "all" ]]; then
+    [[ ! -s live_urls.txt ]] && { msg "No live URLs!" "$R"; exit 1; }
+    msg "Parameter Hunting..." "$Y"
+    (
+        gf xss live_urls.txt > params/xss.txt 2>/dev/null || true
+        gf sqli live_urls.txt > params/sqli.txt 2>/dev/null || true
+        head -50 live_urls.txt | paramspider -o params/paramspider.txt --quiet 2>/dev/null || true
+    ) & loading "Parameters"
+    msg "Parameters extracted" "$G"
+fi
+
+# === PORTS + OS ===
+if [[ "$MODE" == *"ports"* || "$MODE" == "all" ]]; then
+    [[ ! -s subs.txt ]] && { msg "No subs!" "$R"; exit 1; }
+    msg "Port Scanning..." "$R"
+    (
+        naabu -list subs.txt -p 1-1000 -o ports/open.txt
+        nmap -iL ports/open.txt -sV -O --script vuln -oN ports/nmap.txt 2>/dev/null || true
+    ) & loading "Ports"
+    msg "Open ports: $(wc -l < ports/open.txt 2>/dev/null || echo 0)" "$G"
+fi
+
+# === NUCLEI ===
+if [[ "$MODE" == *"nuclei"* || "$MODE" == "all" ]]; then
     INPUT="live_urls.txt"
     [[ -f "input.txt" ]] && INPUT="input.txt"
-    [[ ! -s "$INPUT" ]] && { msg "No URLs! Run -l or -f" "$R"; exit 1; }
-    msg "Running Nuclei (All Severities)..." "$R"
+    [[ ! -s "$INPUT" ]] && { msg "No URLs!" "$R"; exit 1; }
+
+    msg "Vulnerability Scan..." "$R"
     (
         nuclei -l "$INPUT" -severity critical,high,medium,low -o vulns.txt -silent -c 100
-    ) & loading "Vulnerability Scan"
-    msg "Vulnerabilities: $(wc -l < vulns.txt)" "$G"
+    ) & loading "Nuclei"
+    msg "Vulns: $(wc -l < vulns.txt 2>/dev/null || echo 0)" "$G"
 fi
 
-# === PARAMETERS, PORTS, SCREENSHOTS (Full Mode) ===
-if $DO_FULL; then
+# === SCREENSHOTS ===
+if [[ "$MODE" == "all" ]]; then
     [[ -s live_urls.txt ]] && {
-        msg "Hunting parameters..." "$Y"
-        (
-            gf xss live_urls.txt > params/xss.txt
-            gf sqli live_urls.txt > params/sqli.txt
-            paramspider -l <(head -50 live_urls.txt) -o params/paramspider.txt --quiet
-        ) & loading "Parameters"
-        msg "Parameters found"
-        
-        msg "Scanning ports..." "$R"
-        naabu -list subs.txt -p 1-1000 -o ports/open.txt & loading "Ports"
-        
         msg "Taking screenshots..." "$C"
         gowitness file -f live_urls.txt -P screenshots/ --threads 10 & loading "Screenshots"
     }
@@ -152,18 +175,20 @@ fi
 # === HTML REPORT ===
 cat > report.html <<EOF
 <!DOCTYPE html>
-<html><head><title>DevRecon v8.0 - $DOMAIN</title>
+<html><head><title>DevRecon v10.0 - $DOMAIN</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>body{background:#000;color:#0f0;font-family:monospace}</style></head>
-<body class="p-5">
-<div class="container text-center">
-<h1 class="text-success">DEVRECON v8.0</h1>
+<style>body{background:#000;color:#0f0;font-family:monospace;padding:20px}</style></head>
+<body>
+<div class="container">
+<h1 class="text-success">DEVRECON v10.0 REPORT</h1>
 <h2>$DOMAIN</h2>
-<pre>Subdomains: $(wc -l < subs.txt 2>/dev/null || echo 0)</pre>
-<pre>Live URLs: $(wc -l < live_urls.txt 2>/dev/null || echo 0)</pre>
-<pre>Vulnerabilities: $(wc -l < vulns.txt 2>/dev/null || echo 0)</pre>
+<pre>Subdomains : $(wc -l < subs.txt 2>/dev/null || echo 0)</pre>
+<pre>Live URLs   : $(wc -l < live_urls.txt 2>/dev/null || echo 0)</pre>
+<pre>Vulns      : $(wc -l < vulns.txt 2>/dev/null || echo 0)</pre>
+<pre>Open Ports : $(wc -l < ports/open.txt 2>/dev/null || echo 0)</pre>
 <p>Generated: $(date)</p>
 </div></body></html>
 EOF
 
 msg "MISSION COMPLETE! Report: $WORKDIR/report.html" "$B"
+echo -e "${B}Open: firefox $WORKDIR/report.html${N}"
