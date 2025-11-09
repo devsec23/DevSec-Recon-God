@@ -1,101 +1,133 @@
 #!/bin/bash
-# recon-GOD-v15.sh - FULL RECON + PORTS + OS + VULNS + WEAK STRONG
+# DevRecon.sh v2.0 - Fixed + Full Recon + Help + Auto-Install
 # Author: DevSec Pro | 2025
 
 set -euo pipefail
+
+# Colors
 G="\033[0;32m"; R="\033[0;31m"; Y="\033[1;33m"; C="\033[0;36m"; N="\033[0m"
-msg() { echo -e "${2:-$G}[GOD] $1$N"; }
+msg() { echo -e "${2:-$G}[DevRecon] $1$N"; }
 
-DOMAIN="$1"
-WORKDIR="$HOME/GOD-v15-$DOMAIN-$(date +%s)"
-mkdir -p "$WORKDIR"/{subs,live,urls,params,ports,vulns,report} && cd "$WORKDIR"
+# Help
+usage() {
+    cat <<'EOF'
 
-# Auto-Install
+DevRecon.sh v2.0 - Ultimate Recon Tool
+
+Usage:
+  ./DevRecon.sh -d <domain>        → Full recon
+  ./DevRecon.sh -d <domain> -a     → All (same as above)
+  ./DevRecon.sh -d <domain> -s     → Subdomains only
+  ./DevRecon.sh -d <domain> -l     → Live URLs only
+  ./DevRecon.sh -d <domain> -p     → Ports + OS + Vulns
+  ./DevRecon.sh -f <file> -n       → Nuclei on file
+  ./DevRecon.sh -h                 → Show this help
+
+Examples:
+  ./DevRecon.sh -d tesla.com
+  ./DevRecon.sh -d tesla.com -p
+  ./DevRecon.sh -f live.txt -n
+
+EOF
+    exit 0
+}
+
+# Auto-Install Tools
 install() {
     [[ -z "$(command -v $1)" ]] && {
         msg "Installing $1..." "$Y"
-        go install "$2" 2>/dev/null || pip install "$2" 2>/dev/null || true
+        if [[ "$1" == "nuclei" || "$1" == "httpx" || "$1" == "naabu" ]]; then
+            go install "$2" 2>/dev/null || true
+        elif [[ "$1" == "paramspider" ]]; then
+            pip install paramspider 2>/dev/null || true
+        fi
     }
 }
+
 install httpx github.com/projectdiscovery/httpx/cmd/httpx@latest
 install nuclei github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 install naabu github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-install nmap nmap
-install gf github.com/tomnomnom/gf@latest
-nuclei -update-templates &>/dev/null
+install paramspider paramspider
+nuclei -update-templates &>/dev/null || true
 
-# 1. Subdomains
-msg "Subdomains..."
-{
-    subfinder -d "$DOMAIN" -silent
-    amass enum -passive -d "$DOMAIN" | grep -oE "[a-zA-Z0-9.-]+\.$DOMAIN"
-    assetfinder --subs-only "$DOMAIN"
-    gau "$DOMAIN" --subs
-} | sort -u > subs.txt
-msg "Subdomains: $(wc -l < subs.txt)"
+# Parse Args
+DOMAIN=""; FILE=""; MODE="full"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -d) DOMAIN="$2"; shift ;;
+        -f) FILE="$2"; shift ;;
+        -a) MODE="full" ;;
+        -s) MODE="subs" ;;
+        -l) MODE="live" ;;
+        -p) MODE="ports" ;;
+        -n) MODE="nuclei" ;;
+        -h) usage ;;
+        *) msg "Invalid option: $1" "$R"; usage ;;
+    esac
+    shift
+done
 
-# 2. Live URLs
-msg "Live Probing..."
-sed 's/^/https:\/\//' subs.txt | httpx -silent -sc -title > live.txt
-grep -E "200|301|302" live.txt | awk '{print $1}' > live_urls.txt
-msg "Live: $(wc -l < live_urls.txt)"
+[[ -z "$DOMAIN" && -z "$FILE" ]] && { msg "Error: Use -d domain.com or -f file.txt" "$R"; usage; }
 
-# 3. URL Collection
-msg "Crawling URLs..."
-gau "$DOMAIN" --subs > urls/gau.txt
-katana -list live_urls.txt -silent -d 3 -o urls/katana.txt
-cat live_urls.txt urls/gau.txt urls/katana.txt | sort -u > urls/all.txt
-msg "Total URLs: $(wc -l < urls/all.txt)"
+WORKDIR="$HOME/DevRecon-$DOMAIN-$(date +%s)"
+[[ -n "$FILE" ]] && WORKDIR="$HOME/DevRecon-file-$(date +%s)"
+mkdir -p "$WORKDIR" && cd "$WORKDIR"
 
-# 4. Parameters
-msg "Parameter Hunting..."
-gf xss urls/all.txt > params/xss.txt
-gf sqli urls/all.txt > params/sqli.txt
-gf lfi urls/all.txt > params/lfi.txt
-head -50 live_urls.txt | paramspider -o params/paramspider.txt --quiet
-msg "Params: $(find params -type f -name "*.txt" -exec wc -l {} + | tail -1 | awk '{print $1}')"
+# === MODES ===
+case "$MODE" in
+    "file")
+        [[ ! -f "$FILE" ]] && { msg "File not found: $FILE" "$R"; exit 1; }
+        msg "Nuclei on $FILE..."
+        nuclei -l "$FILE" -severity critical,high,medium,low -o vulns.txt -c 200
+        msg "Done! Vulns: $(wc -l < vulns.txt)"
+        ;;
+    "subs")
+        msg "Subdomains for $DOMAIN..."
+        {
+            subfinder -d "$DOMAIN" -silent 2>/dev/null || true
+            amass enum -passive -d "$DOMAIN" 2>/dev/null | grep -oE "[a-zA-Z0-9.-]+\.$DOMAIN" || true
+            assetfinder --subs-only "$DOMAIN" 2>/dev/null || true
+        } | sort -u > subs.txt
+        msg "Found $(wc -l < subs.txt) → subs.txt"
+        ;;
+    "live")
+        [[ ! -s subs.txt ]] && ./DevRecon.sh -d "$DOMAIN" -s
+        msg "Live Probing..."
+        sed 's/^/https:\/\//' subs.txt | httpx -silent -sc -title > live.txt
+        grep -E "200|301|302" live.txt | awk '{print $1}' > live_urls.txt
+        msg "Live: $(wc -l < live_urls.txt) → live_urls.txt"
+        ;;
+    "ports")
+        [[ ! -s subs.txt ]] && ./DevRecon.sh -d "$DOMAIN" -s
+        msg "Port Scanning + OS + Services..."
+        naabu -list subs.txt -p 1-1000 -o ports/open.txt
+        nmap -iL ports/open.txt -sV -O --script vuln -oN ports/nmap.txt -oX ports/nmap.xml
+        msg "Ports: $(wc -l < ports/open.txt)"
+        ;;
+    "nuclei")
+        [[ ! -s live_urls.txt ]] && ./DevRecon.sh -d "$DOMAIN" -l
+        msg "Nuclei FULL Scan (All Severities)..."
+        nuclei -l live_urls.txt -severity critical,high,medium,low -o vulns.txt -c 200
+        msg "Vulns: $(wc -l < vulns.txt)"
+        ;;
+    "full")
+        msg "FULL RECON MODE: $DOMAIN"
+        ./DevRecon.sh -d "$DOMAIN" -s
+        ./DevRecon.sh -d "$DOMAIN" -l
+        ./DevRecon.sh -d "$DOMAIN" -p
+        ./DevRecon.sh -d "$DOMAIN" -n
+        ;;
+esac
 
-# 5. PORT SCAN + OS + SERVICES + VULNS
-msg "Port Scanning + OS + Services..."
-naabu -list live_urls.txt -p 1-1000 -o ports/open.txt
-nmap -iL ports/open.txt -sV -O --script vuln -oX ports/nmap.xml -oN ports/nmap.txt
-msg "Ports: $(wc -l < ports/open.txt)"
-
-# 6. NUCLEI FULL (Critical + High + Medium + Low)
-msg "Nuclei FULL Scan (All Severities)..."
-nuclei -l urls/all.txt -severity critical,high,medium,low -o vulns/all.txt -c 200
-msg "Vulns: $(wc -l < vulns/all.txt)"
-
-# 7. OS & Service Summary
-msg "OS & Services Summary..."
-OS=$(grep -oP '<osmatch name="\K[^"]+' ports/nmap.xml | head -1 || echo "Unknown")
-SERVICE=$(grep -oP '<service name="\K[^"]+' ports/nmap.xml | head -1 || echo "Unknown")
-VERSION=$(grep -oP '<service product="\K[^"]+' ports/nmap.xml | head -1 || echo "Unknown")
-
-# 8. HTML Report (Beautiful + Professional)
-cat > report/GOD.html <<EOF
-<!DOCTYPE html>
-<html><head><title>GOD v15 - $DOMAIN</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>body{background:#000;color:#0f0;font-family:monospace}</style></head>
-<body class="p-5">
-<div class="container text-center">
-<h1 class="text-success">RECON GOD v15</h1>
-<h2>$DOMAIN</h2>
-<pre>Subdomains: $(wc -l < subs.txt)</pre>
-<pre>Live URLs: $(wc -l < live_urls.txt)</pre>
-<pre>Total URLs: $(wc -l < urls/all.txt)</pre>
-<pre>Parameters: $(find params -type f -name "*.txt" -exec wc -l {} + | tail -1 | awk '{print $1}')</pre>
-<pre>Open Ports: $(wc -l < ports/open.txt)</pre>
-<pre>OS: $OS</pre>
-<pre>Service: $SERVICE $VERSION</pre>
-<pre>Vulnerabilities: $(wc -l < vulns/all.txt)</pre>
-<hr>
-<h3 class="text-danger">Top Vulnerabilities (All Severities)</h3>
-<pre>$(head -15 vulns/all.txt)</pre>
-<p>Generated by <b>GOD v15</b> • $(date)</p>
-</div></body></html>
+# Final Report
+cat > REPORT.txt <<EOF
+=== DevRecon v2.0 Report ===
+Target: $DOMAIN
+Date: $(date)
+Subdomains: $(wc -l < subs.txt 2>/dev/null || echo 0)
+Live URLs: $(wc -l < live_urls.txt 2>/dev/null || echo 0)
+Open Ports: $(wc -l < ports/open.txt 2>/dev/null || echo 0)
+Vulnerabilities: $(wc -l < vulns.txt 2>/dev/null || echo 0)
 EOF
 
-msg "DONE! Open Report:" "$G"
-echo "firefox $WORKDIR/report/GOD.html"
+msg "DONE! Report: $WORKDIR/REPORT.txt" "$G"
